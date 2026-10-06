@@ -1,0 +1,27 @@
+{
+  "name": "bue-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地 Markdown 预览服务器，支持 Mermaid、代码高亮、目录导航",
+  "type": "module",
+  "bin": {
+    "bue": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "highlight.js": "^11.12.0",
+    "marked": "^18.1.0",
+    "mermaid": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

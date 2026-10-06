@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="90" viewBox="0 0 320 90">
+  <rect width="320" height="90" rx="8" fill="#ddf4ff"/>
+  <circle cx="52" cy="45" r="20" fill="#0969da"/>
+  <text x="52" y="51" font-size="16" fill="#fff" text-anchor="middle" font-family="sans-serif">md</text>
+  <line x1="80" y1="45" x2="140" y2="45" stroke="#0969da" stroke-width="2"/>
+  <polygon points="152,35 172,45 152,55" fill="#0969da"/>
+  <rect x="182" y="25" width="60" height="40" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+  <text x="212" y="50" font-size="13" fill="#0969da" text-anchor="middle" font-family="sans-serif">HTML</text>
+  <text x="16" y="80" font-size="11" fill="#59636e" font-family="sans-serif">relative /assets/ route</text>
+</svg>
