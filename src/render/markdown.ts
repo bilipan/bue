@@ -66,11 +66,24 @@ export function renderMarkdown(source: string, options: RenderOptions): RenderRe
   return { html: marked.parse(source) as string, toc: pruneToc(toc) };
 }
 
-/** mermaid 代码块：正文放 .mermaid 占位（客户端渲染），源码折叠在 details 里 */
+/**
+ * mermaid 代码块：正文放 .mermaid 占位（客户端渲染），源码折叠在 details 里。
+ *
+ * 图可缩放，所以正文外面套一层 .mermaid-viewport——放大后超出 figure 宽度时
+ * 由它横向滚动。缩放值写在 figure 的 data-zoom 上（不写在 .mermaid 里），
+ * 主题切换会重绘并清空 .mermaid，画在 figure 上才跨重绘存活。
+ */
 function mermaidBlock(code: string): string {
   return (
-    `<figure class="mermaid-figure">` +
-    `<div class="mermaid">${escapeHtml(code)}</div>` +
+    `<figure class="mermaid-figure" data-zoom="1">` +
+    `<div class="mermaid-viewport"><div class="mermaid">${escapeHtml(code)}</div></div>` +
+    `<div class="mermaid-tools">` +
+    `<button class="mermaid-tool" type="button" data-zoom-out aria-label="缩小图表" title="缩小">−</button>` +
+    `<output class="mermaid-level" data-zoom-level>100%</output>` +
+    `<button class="mermaid-tool" type="button" data-zoom-in aria-label="放大图表" title="放大">+</button>` +
+    `<button class="mermaid-tool" type="button" data-zoom-reset title="恢复原始大小">1:1</button>` +
+    `<button class="mermaid-tool" type="button" data-zoom-full title="全屏查看（滚轮缩放，拖拽平移）">全屏</button>` +
+    `</div>` +
     `<details class="mermaid-src"><summary>查看源码</summary>` +
     `<pre><code class="hljs">${escapeHtml(code)}</code></pre></details>` +
     `</figure>\n`

@@ -31,7 +31,7 @@ pnpm link --global             # 暴露全局 bue
 | `src/render/toc.ts` | 标题 slug、id 去重分配、目录层级裁剪 |
 | `src/render/highlight.ts` | hljs 封装，主题 CSS 路径 |
 | `src/ui/theme.css` | GitHub README 风样式，`light-dark()` 双主题 |
-| `src/ui/client.js` | 浏览器端：主题、目录、mermaid、复制、灯箱 |
+| `src/ui/client.js` | 浏览器端：主题、目录、mermaid、图缩放与全屏、复制、灯箱 |
 | `src/ui/shell.ts` | HTML 外壳拼装，CSS/JS 内联 |
 | `examples/demo.md` | 单文件能力验收样例 |
 | `examples/docs/` | 多文件目录模式样例 |
@@ -47,6 +47,8 @@ pnpm link --global             # 暴露全局 bue
 5. **`safeResolve(allowedRoot, baseDir, urlPath)` 的两个路径参数不能合并。** `baseDir` 是解析起点（当前文档目录），`allowedRoot` 才是安全边界（工作区根）。合并会把合法的 `../` 判成越界。
 6. **不要锁页面滚动，也不要加遮罩。** 宽屏目录是常驻侧栏，一旦出现 `body { overflow: hidden }` 整页就滚不动（真出过这个 bug）。窄屏抽屉靠「点抽屉外」关闭，不靠遮罩——遮罩会吃掉正文区域的触摸滚动。`tests/ui.test.ts` 守着这条。
 7. **凡是"收起目录"的逻辑都必须先判 `wide.matches`。** 宽屏目录是常驻侧栏，点目录项、点页面空白都不能把它收起——只有工具条按钮能。只有窄屏抽屉才该自动收起。这条同样有测试守着。
+8. **改 mermaid 缩放先读这三条坑。** svg 的节点归属会变（全屏时被搬进画布，取节点要走 `activeSvg()` 而不是 `svgOf()`，否则缩放静默失效、关闭时甚至把图弄丢）；100% 必须还原本来的内联 `max-width`，清空会让小图撑满变形；放大时反过来要显式写 `max-width: none`，否则被 mermaid 的内联值卡住。
+9. **flex 容器里的 mermaid 图要显式给 `align-items`。** 默认 `stretch` 会把 svg 拉成容器那么高，宽图放大时高度卡住不动，看起来像缩放失灵；居中一律用 `safe center`，普通 `center` 会让溢出那半截滚不到。
 
 ## 架构要点
 
@@ -68,3 +70,7 @@ pnpm link --global             # 暴露全局 bue
 - 窄屏（<900px）：TOC 默认收起且不遮挡工具条，抽屉可开可关
 - **宽屏点目录项后目录必须仍在**（只滚动页面，不收起侧栏）；窄屏点目录项才收起抽屉
 - **滚动任何时候都可用**：宽屏目录展开/收起两种状态都能滚；窄屏抽屉打开时正文仍能滚动（含真实触摸滑动），抽屉自身也能独立滚
+- 图缩放：6 张图工具条都出现；`+` 到 150% 后左右两端都能滚到（尤其 gantt / sequence）；`1:1` 后宽度回到原样，窄图不被拉大
+- **切主题后缩放百分比不变**（重绘换了新 svg 节点，缩放要套回去）
+- 图全屏：点「全屏」和点图本体都能进；滚轮缩放以光标为锚点、拖拽平移（窄屏用真实触摸滑一遍）、`Esc` 与「关闭」都能退出，退出后图回到原位且不重复（`document.querySelectorAll('svg').length` 应和打开前一致）
+- 全屏层打开时**背后正文不能跟着滚**，且全屏层不锁 `body` 滚动

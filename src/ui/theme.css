@@ -514,9 +514,73 @@ body {
   text-align: left;
 }
 
+/*
+ * 放大后图会比 figure 宽，横向滚动交给这一层。
+ * 居中必须用 safe center：普通 center 在子元素宽于容器时会把左边那半截
+ * 顶到容器外、且滚不到（content 被推到负偏移），safe 才会在溢出时靠左对齐。
+ */
+.mermaid-viewport {
+  display: flex;
+  justify-content: safe center;
+  /* 单个子元素时 stretch 是空操作，写明是为了图绝不会被拉高 */
+  align-items: flex-start;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+}
+
+/*
+ * .mermaid 是 flex item，默认按内容宽度收缩；而 mermaid 生成的 svg 是
+ * width="100%"，它的 100% 参照的正是这个收缩后的宽度——两级循环下来，
+ * 所有图都会被压成 svg 的默认 300px 宽，比正文宽的图再也不收窄。
+ * 让这一层撑满容器，svg 的 100% 才有正确的参照系。
+ */
+.mermaid-viewport > .mermaid {
+  width: 100%;
+}
+
 .mermaid-figure svg {
   max-width: 100%;
   height: auto;
+}
+
+.mermaid-tools {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+/* 图还没渲染出来时先别亮按钮，免得给一个死按钮 */
+.mermaid-figure:not([data-rendered]) .mermaid-tools {
+  display: none;
+}
+
+.mermaid-tool {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.mermaid-tool:hover {
+  color: var(--fg);
+  border-color: var(--fg-subtle);
+}
+
+.mermaid-level {
+  min-width: 40px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .mermaid-error {
@@ -544,6 +608,68 @@ body {
 
 .mermaid-src pre {
   margin-top: 8px;
+}
+
+/* ---------- 图全屏查看 ---------- */
+
+/*
+ * 和图片灯箱一样不锁 body 滚动：层是 fixed 的，画布自己滚，
+ * 并用 overscroll-behavior 切断传递，滚到边不会连带滚背后的正文。
+ */
+.mermaid-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(1, 4, 9, 0.85);
+}
+
+.mermaid-fullscreen-canvas {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: safe center;
+  /*
+   * align-items 必须显式给：flex 默认 stretch，会把 svg 拉成画布那么高，
+   * 于是放大一张宽图时高度始终卡住不变，看起来像缩放失灵。
+   * safe center 居中；比画布高时靠上对齐，否则上半截滚不到。
+   */
+  align-items: safe center;
+  padding: 32px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* 触摸拖拽平移交给 pointer 事件，别让浏览器抢去滚页面 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.mermaid-fullscreen-canvas.panning {
+  cursor: grabbing;
+}
+
+.mermaid-fullscreen-canvas svg {
+  flex: none;
+  max-width: none;
+  background: var(--bg);
+  border-radius: var(--radius);
+}
+
+.mermaid-fullscreen-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  height: 30px;
+  padding: 0 12px;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.mermaid-fullscreen-close:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* ---------- 文件索引页 ---------- */

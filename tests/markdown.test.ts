@@ -36,6 +36,22 @@ describe("renderMarkdown", () => {
     assert.doesNotMatch(html, /<b>x<\/b>/);
   });
 
+  test("mermaid 图带缩放工具条和横向滚动容器", () => {
+    const { html } = renderMarkdown("```mermaid\nflowchart LR\n  A-->B\n```", identity);
+    assert.match(html, /class="mermaid-viewport"/, "放大后要有一层容器负责横向滚动");
+    assert.match(html, /data-zoom-in/);
+    assert.match(html, /data-zoom-out/);
+    assert.match(html, /data-zoom-reset/);
+    assert.match(html, /data-zoom-full/, "应有进入全屏查看的入口");
+    assert.match(html, /data-zoom-level/, "应显示当前缩放比例");
+  });
+
+  test("缩放值存在 figure 上而不是 .mermaid 里", () => {
+    // 主题切换会重绘并清空 .mermaid，画在里面的缩放值活不过一次切换
+    const { html } = renderMarkdown("```mermaid\nflowchart LR\n  A-->B\n```", identity);
+    assert.match(html, /<figure class="mermaid-figure" data-zoom="1">/);
+  });
+
   test("mermaid 大写语言标记也能识别", () => {
     const { html } = renderMarkdown("```Mermaid\ngraph TD; A-->B\n```", identity);
     assert.match(html, /class="mermaid"/);

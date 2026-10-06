@@ -207,6 +207,10 @@
     var nodes = document.querySelectorAll(".mermaid");
     if (!nodes.length) return;
 
+    // 全屏层里正拿着被移走的那个 svg：重绘会再造一个，DOM 里就会出现两份
+    // 重复 id 的 SVG（marker / clipPath 全靠 id 引用），箭头会集体失效
+    closeViewer();
+
     // 已渲染过的节点要先还原成纯源码并清掉 data-processed，否则 mermaid 会跳过
     for (var i = 0; i < nodes.length; i++) {
       if (!nodes[i].getAttribute("data-processed")) continue;
@@ -221,9 +225,15 @@
       securityLevel: "strict",
       fontFamily: getComputedStyle(document.body).fontFamily,
     });
-    window.__bueMermaid.run({ nodes: nodes }).catch(function (e) {
-      reportMermaidError(nodes, e);
-    });
+    window.__bueMermaid.run({ nodes: nodes }).then(
+      function () {
+        // 重绘换了新的 svg 节点，把 data-zoom 上存的缩放套回去
+        syncAllFigures();
+      },
+      function (e) {
+        reportMermaidError(nodes, e);
+      },
+    );
   }
 
   function reportMermaidError(nodes, err) {
@@ -237,6 +247,7 @@
       box.textContent = "Mermaid 渲染失败：" + message + "\n\n" + mermaidSource(el);
       el.appendChild(box);
     }
+    syncAllFigures(); // 渲染失败时工具条要跟着隐藏
   }
 
   function initMermaid() {
@@ -253,6 +264,295 @@
       reportMermaidError(nodes, "无法加载 /vendor/mermaid.js");
     };
     document.head.appendChild(script);
+  }
+
+  /* ---------------- 图缩放 ---------------- */
+
+  var ZOOM_MIN = 0.25;
+  var ZOOM_MAX = 8;
+  var ZOOM_STEP = 0.25;
+
+  // figure -> { svg, w, h }：svg 节点换了（主题切换会重绘）就重新量，
+  // 因为量到的必须是「原始尺寸」，量已缩放过的宽度会越滚越大
+  var baseSizes = new WeakMap();
+  var viewer = null;
+
+  function figureOf(node) {
+    return node && node.closest ? node.closest(".mermaid-figure") : null;
+  }
+
+  function svgOf(fig) {
+    return fig.querySelector(".mermaid > svg");
+  }
+
+  /**
+   * figure 当前的 svg 节点。全屏查看时它已经被搬进画布，不在 figure 里面了，
+   * 这时候还去 figure 里找就会拿到 null——缩放会静默失效，关闭时甚至会把图弄丢。
+   */
+  function activeSvg(fig) {
+    if (viewer && viewer.fig === fig) {
+      var moved = viewer.canvas.querySelector("svg");
+      if (moved) return moved;
+    }
+    return svgOf(fig);
+  }
+
+  function zoomOf(fig) {
+    var v = parseFloat(fig.getAttribute("data-zoom"));
+    return v > 0 ? v : 1;
+  }
+
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
+  function baseSize(fig, svg) {
+    var cached = baseSizes.get(fig);
+    if (cached && cached.svg === svg) return cached;
+
+    var box = svg.viewBox && svg.viewBox.baseVal;
+    var w = box && box.width ? box.width : parseFloat(svg.getAttribute("width"));
+    var h = box && box.height ? box.height : parseFloat(svg.getAttribute("height"));
+    if (!w) {
+      // viewBox 和 width 属性都没有才退回实测——必须趁还没缩放时量
+      var rect = svg.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+    }
+    var size = { svg: svg, w: w || 0, h: h || 0, style: svg.getAttribute("style") };
+    baseSizes.set(fig, size);
+    return size;
+  }
+
+  /**
+   * 把缩放套到 svg 上。缩放值只认 figure 上的 data-zoom，
+   * 全屏层里改的也是它，关掉层回到正文还是同一个大小。
+   */
+  function applyZoom(fig, scale) {
+    scale = clamp(scale, ZOOM_MIN, ZOOM_MAX);
+    fig.setAttribute("data-zoom", String(scale));
+
+    var level = fig.querySelector("[data-zoom-level]");
+    if (level) level.textContent = Math.round(scale * 100) + "%";
+
+    var svg = activeSvg(fig);
+    if (!svg) {
+      fig.removeAttribute("data-rendered");
+      return;
+    }
+    var base = baseSize(fig, svg);
+    if (scale === 1) {
+      /*
+       * 100% 是「原样」：把 mermaid 自己写的内联样式还回去。它写的
+       * max-width 就是图的固有宽度——窄图不会被拉大，宽图由 CSS 的
+       * max-width: 100% 收窄。清成空串反而会让 svg 退回 width="100%"
+       * 撑满容器，把小图放大变形。
+       */
+      if (base.style == null) svg.removeAttribute("style");
+      else svg.setAttribute("style", base.style);
+    } else {
+      /*
+       * 放大时必须显式压掉那条内联 max-width，否则放大到比它更宽
+       * 就被卡住不动；width 给死 px，配合 viewport 的横向滚动。
+       */
+      svg.style.maxWidth = "none";
+      svg.style.width = base.w ? Math.round(base.w * scale) + "px" : "";
+      svg.style.height = "auto";
+    }
+    fig.setAttribute("data-rendered", "");
+  }
+
+  function syncFigure(fig) {
+    if (!fig) return;
+    applyZoom(fig, zoomOf(fig));
+  }
+
+  function syncAllFigures() {
+    var figs = document.querySelectorAll(".mermaid-figure");
+    for (var i = 0; i < figs.length; i++) syncFigure(figs[i]);
+  }
+
+  /* 全屏查看：层里滚轮缩放、拖拽平移、Esc 关闭 */
+
+  function openViewer(fig) {
+    closeViewer(); // 先把上一张可能还开着的放回正文，再取本图的 svg
+    var svg = svgOf(fig);
+    if (!svg) return;
+
+    var box = document.createElement("div");
+    box.className = "mermaid-fullscreen";
+
+    var canvas = document.createElement("div");
+    canvas.className = "mermaid-fullscreen-canvas";
+
+    var closeBtn = document.createElement("button");
+    closeBtn.className = "mermaid-fullscreen-close";
+    closeBtn.type = "button";
+    closeBtn.textContent = "关闭";
+
+    /*
+     * 把真实的 svg 节点搬进来，不能克隆一份：mermaid 生成的 SVG 里箭头
+     * marker、clipPath 全靠 DOM id 引用，克隆会出现重复 id，引用全乱。
+     */
+    viewer = { fig: fig, canvas: canvas, home: svg.parentNode };
+    canvas.appendChild(svg);
+    box.appendChild(canvas);
+    box.appendChild(closeBtn);
+    document.body.appendChild(box);
+
+    var scale = zoomOf(fig);
+    applyZoom(fig, scale);
+    fitViewer(scale);
+
+    canvas.addEventListener(
+      "wheel",
+      function (e) {
+        e.preventDefault();
+        zoomViewerBy(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+      },
+      { passive: false },
+    );
+
+    var drag = null;
+    canvas.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      drag = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+      canvas.classList.add("panning");
+      if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      canvas.scrollLeft = drag.left - (e.clientX - drag.x);
+      canvas.scrollTop = drag.top - (e.clientY - drag.y);
+    });
+    var endDrag = function () {
+      drag = null;
+      canvas.classList.remove("panning");
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+
+    closeBtn.addEventListener("click", closeViewer);
+  }
+
+  /** 层内容小到不用滚时，居中显示 */
+  function fitViewer(scale) {
+    var canvas = viewer.canvas;
+    var fig = viewer.fig;
+    var svg = activeSvg(fig);
+    if (!svg || !scale) return;
+    var base = baseSize(fig, svg);
+    var overflowX = base.w * scale - canvas.clientWidth;
+    var overflowY = base.h * scale - canvas.clientHeight;
+    if (overflowX > 0) canvas.scrollLeft = overflowX / 2;
+    if (overflowY > 0) canvas.scrollTop = overflowY / 2;
+    else canvas.scrollTop = 0;
+  }
+
+  /** 以光标为锚点缩放：缩放前后光标下的那个点保持不动 */
+  function zoomViewerBy(factor, clientX, clientY) {
+    var fig = viewer.fig;
+    var canvas = viewer.canvas;
+    var old = zoomOf(fig);
+    var next = clamp(old * factor, ZOOM_MIN, ZOOM_MAX);
+    if (next === old) return;
+
+    var rect = canvas.getBoundingClientRect();
+    var atX = clientX - rect.left;
+    var atY = clientY - rect.top;
+    var contentX = canvas.scrollLeft + atX;
+    var contentY = canvas.scrollTop + atY;
+
+    applyZoom(fig, next);
+    canvas.scrollLeft = contentX * (next / old) - atX;
+    canvas.scrollTop = contentY * (next / old) - atY;
+  }
+
+  function closeViewer() {
+    if (!viewer) return;
+    var fig = viewer.fig;
+    var canvas = viewer.canvas;
+    var svg = activeSvg(fig);
+    if (svg) viewer.home.appendChild(svg); // 搬回正文，缩放状态保持在 data-zoom 上
+    if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
+    var box = document.querySelector(".mermaid-fullscreen");
+    if (box && box.parentNode) box.parentNode.removeChild(box);
+    viewer = null;
+    syncFigure(fig);
+  }
+
+  function initDiagramZoom() {
+    if (!document.querySelector(".mermaid-figure")) return;
+
+    document.addEventListener("click", function (e) {
+      if (!e.target || !e.target.closest) return;
+
+      var full = e.target.closest("[data-zoom-full]");
+      if (full) {
+        var f = figureOf(full);
+        if (!f) return;
+        if (viewer && viewer.fig === f) closeViewer();
+        else openViewer(f);
+        return;
+      }
+
+      var step = e.target.closest("[data-zoom-in]");
+      var fig = figureOf(step || e.target);
+      if (!fig) return;
+
+      if (step) {
+        applyZoom(fig, zoomOf(fig) + ZOOM_STEP);
+        return;
+      }
+      if (e.target.closest("[data-zoom-out]")) {
+        applyZoom(fig, zoomOf(fig) - ZOOM_STEP);
+        return;
+      }
+      if (e.target.closest("[data-zoom-reset]")) {
+        applyZoom(fig, 1);
+        return;
+      }
+      // 点图本体（全屏按钮和工具条已在上文处理掉）进入全屏
+      if (svgOf(fig) && e.target.closest(".mermaid-viewport")) openViewer(fig);
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (!viewer) return;
+      if (e.key === "Escape") {
+        closeViewer();
+        return;
+      }
+      if (e.key === "+" || e.key === "=") {
+        zoomViewerBy(1 + ZOOM_STEP, centerX(), centerY());
+      } else if (e.key === "-" || e.key === "_") {
+        zoomViewerBy(1 / (1 + ZOOM_STEP), centerX(), centerY());
+      } else if (e.key === "0") {
+        applyZoom(viewer.fig, 1);
+        fitViewer(1);
+      }
+    });
+
+    window.addEventListener("resize", function () {
+      // 放大到不再溢出容器时回落原始大小，免得留一个看不出区别的 150%
+      var figs = document.querySelectorAll(".mermaid-figure");
+      for (var i = 0; i < figs.length; i++) {
+        var fig = figs[i];
+        var svg = svgOf(fig);
+        var vp = fig.querySelector(".mermaid-viewport");
+        if (!svg || !vp || zoomOf(fig) <= 1) continue;
+        if (svg.getBoundingClientRect().width <= vp.clientWidth + 1) applyZoom(fig, 1);
+      }
+    });
+  }
+
+  function centerX() {
+    var r = viewer.canvas.getBoundingClientRect();
+    return r.left + r.width / 2;
+  }
+
+  function centerY() {
+    var r = viewer.canvas.getBoundingClientRect();
+    return r.top + r.height / 2;
   }
 
   /* ---------------- 复制按钮 ---------------- */
@@ -323,6 +623,7 @@
     initToc();
     initCopyButtons();
     initLightbox();
+    initDiagramZoom();
     initMermaid();
   }
 
