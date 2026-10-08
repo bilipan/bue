@@ -154,9 +154,14 @@ body {
 
 /* ---------- 布局 ---------- */
 
+/*
+ * --content-width 是正文阅读宽度，宽度上限写在这里而不是内联 style：
+ * 内联的 max-width 压不住下面「没有目录时放宽」的规则（内联优先级更高）。
+ */
 .bue-layout {
   display: flex;
   gap: 32px;
+  justify-content: center;
   max-width: calc(var(--content-width) + 320px);
   margin: 0 auto;
   padding: 24px 20px 96px;
@@ -165,6 +170,15 @@ body {
 .markdown-body {
   flex: 1;
   min-width: 0;
+  max-width: var(--content-width);
+}
+
+/*
+ * 没有目录（--no-toc、或文档没有标题）时不留侧栏那 320px：
+ * 正文吃下原本预留给目录的宽度，并由 margin: auto 居中。
+ */
+.bue-layout:not(.has-toc) .markdown-body {
+  max-width: none;
 }
 
 /* ---------- 目录 ---------- */
@@ -563,6 +577,17 @@ body {
 .mermaid-figure svg {
   max-width: 100%;
   height: auto;
+}
+
+/*
+ * 去掉 mermaid 自带的节点投影，两处都要处理：
+ *  - 主题变量 dropShadow 管的是它注入在 svg 内部 <style> 里的那些（flowchart 等）
+ *  - sequence 的 actor 是把 filter="url(#…-drop-shadow)" 直接写成属性的，
+ *    主题变量管不到，只能靠这条规则压掉（呈现属性本来就输给作者样式，
+ *    所以不需要 !important，也就不必担心压掉别的东西）
+ */
+.mermaid-figure svg [filter] {
+  filter: none;
 }
 
 /*

@@ -78,8 +78,8 @@ ${themeCss}
   <button class="btn" id="toc-btn" type="button" aria-pressed="false" title="目录">${ICONS.toc}<span class="label">目录</span></button>
   <button class="btn" id="theme-btn" type="button" title="切换主题">${ICONS.theme}<span class="label">主题</span></button>
 </header>
-<div class="bue-layout">
-  <article class="markdown-body" style="max-width:var(--content-width)">
+<div class="bue-layout${toc ? " has-toc" : ""}">
+  <article class="markdown-body">
 ${o.bodyHtml}
   </article>
 ${toc}

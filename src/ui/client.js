@@ -220,6 +220,8 @@
       theme: dark ? "dark" : "default",
       securityLevel: "strict",
       fontFamily: getComputedStyle(document.body).fontFamily,
+      // 主题自带的节点投影；剩下的硬编码 filter 属性由 theme.css 兜住
+      themeVariables: { dropShadow: "none" },
     });
     window.__bueMermaid.run({ nodes: nodes }).then(
       function () {

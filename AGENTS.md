@@ -56,6 +56,7 @@ pnpm link --global             # 暴露全局 bue
 14. **相对链接永远不要把原始 href 原样还给浏览器。** 浏览器是拿它对着当前 URL 解析的，正文页在 `/d/<slug>` 或 `/p/<path>` 下，`[b](other.md)` 会被解析成 `/d/other.md` 必然 404。改写器要么给出站内绝对地址，要么明确知道自己没处理好——`return href` 这种写法已经害出过一次线上 404（单文件模式里链到没被扫描的兄弟文档）。`tests/server.test.ts` 的「单文件模式下的文档间跳转」就是这条的护栏。
 15. **`.md` 链接有两个地址，别只认一个。** 扫进 workspace 的用 `/d/<slug>`，没扫进去的用 `/p/<路径>` 按盘上文件渲染。`/p/` 命中清单同 slug 时 302 归一到 `/d/`。
 16. **markdown 扩展名清单只写在 `config.ts` 一处**（`MARKDOWN_EXTS` / `stripMarkdownExt`）。别再在路由里手写 `/\.(md|markdown|mdown|mkd)$/` 这类副本，扩展名一改就会漂。
+17. **正文宽度别走内联 style。** 内联的 `max-width` 优先级高于类规则，会把「没有目录时放宽并居中」压掉。宽度上限写在 `.markdown-body`，`.bue-layout` 用 `.has-toc` 区分有没有侧栏。
 
 ## 架构要点
 
@@ -73,9 +74,11 @@ pnpm link --global             # 暴露全局 bue
 
 - 6 张 mermaid 图（flowchart / flowchart-elk / sequence / state / gantt / pie）全部出图，无 `.mermaid-error`
 - 主题切换：body 背景变 `#0d1117`、hljs 主题 link 切换、mermaid 重绘
+- **mermaid 节点不带阴影**：`[...document.querySelectorAll('.mermaid svg *')].filter((n) => getComputedStyle(n).filter !== 'none')` 应为 0（sequence 的 actor 也要算进去）
 - 代码块复制按钮、图片灯箱、目录滚动高亮、锚点跳转
 - 目录模式：`examples/docs/` 下跨文档跳转、相对图片 `/assets/` 加载、404 状态码
 - 窄屏（<900px）：TOC 默认收起且不遮挡工具条，抽屉可开可关
+- `--no-toc`：正文应居中（左右留白相等）且明显变宽，mermaid 列宽跟着变大
 - **宽屏点目录项后目录必须仍在**（只滚动页面，不收起侧栏）；窄屏点目录项才收起抽屉
 - **滚动任何时候都可用**：宽屏目录展开/收起两种状态都能滚；窄屏抽屉打开时正文仍能滚动（含真实触摸滑动），抽屉自身也能独立滚
 - 图工具条：6 张图右上角都有，四个图标按钮（拖动 / 缩小 / 放大 / 适配），没有文字标签

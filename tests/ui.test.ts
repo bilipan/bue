@@ -6,6 +6,20 @@ import { renderShell } from "../src/ui/shell.ts";
 const themeCss = readFileSync(new URL("../src/ui/theme.css", import.meta.url), "utf8");
 const clientJs = readFileSync(new URL("../src/ui/client.js", import.meta.url), "utf8");
 
+function shell(o: Partial<Parameters<typeof renderShell>[0]> = {}) {
+  return renderShell({
+    title: "t",
+    breadcrumb: ["a"],
+    bodyHtml: "<p>x</p>",
+    toc: [{ id: "h", text: "标题", depth: 2 }],
+    theme: "auto",
+    width: 768,
+    showToc: true,
+    showSwitcher: false,
+    ...o,
+  });
+}
+
 /*
  * 回归护栏：这个 bug 出现过一次——宽屏下目录常驻，而 CSS 里有
  * body.toc-open { overflow: hidden }，导致目录一显示整页就再也滚不动。
@@ -34,16 +48,7 @@ describe("页面滚动任何时候都必须可用", () => {
 
   test("没有全屏遮罩：遮罩会吃掉正文区域的触摸滚动", () => {
     assert.doesNotMatch(themeCss, /\.scrim/, "不要用遮罩隔离抽屉");
-    const html = renderShell({
-      title: "t",
-      breadcrumb: ["a"],
-      bodyHtml: "<p>x</p>",
-      toc: [],
-      theme: "auto",
-      width: 768,
-      showToc: false,
-      showSwitcher: false,
-    });
+    const html = shell();
     assert.doesNotMatch(html, /class="scrim"/, "外壳里不应再输出遮罩元素");
   });
 
@@ -269,5 +274,41 @@ describe("mermaid 图缩放", () => {
     assert.doesNotMatch(clientJs, /fullscreen|openViewer|closeViewer/, "全屏层已移除");
     assert.doesNotMatch(themeCss, /\.mermaid-fullscreen/, "全屏层样式已移除");
     assert.doesNotMatch(clientJs, /cloneNode/, "没有需要搬运/克隆节点的场景了");
+  });
+});
+
+describe("没有目录时正文居中并放宽", () => {
+  test("宽度上限写在 CSS，不是内联 style", () => {
+    // 内联的 max-width 优先级高于任何类规则，会把下面「没有目录时放宽」压掉
+    assert.doesNotMatch(shell(), /<article class="markdown-body" style=/, "正文宽度别再走内联 style");
+    assert.match(themeCss, /\.markdown-body\s*\{[^}]*max-width:\s*var\(--content-width\)/s);
+  });
+
+  test("layout 居中，且有目录时才占侧栏那 320px", () => {
+    assert.match(themeCss, /\.bue-layout\s*\{[^}]*justify-content:\s*center/s, "没有目录时正文要居中");
+    assert.match(
+      themeCss,
+      /\.bue-layout:not\(\.has-toc\) \.markdown-body\s*\{\s*max-width:\s*none;/,
+      "没有目录就不该被阅读宽度卡住",
+    );
+  });
+
+  test("has-toc 只在真的渲染出目录时才有", () => {
+    assert.match(shell(), /<div class="bue-layout has-toc">/, "有目录项时带上标记");
+    assert.match(shell({ toc: [] }), /<div class="bue-layout">/, "目录为空时不留侧栏位置");
+    assert.match(shell({ showToc: false }), /<div class="bue-layout">/, "--no-toc 时不留侧栏位置");
+  });
+});
+
+describe("mermaid 图不带阴影", () => {
+  test("主题变量关掉 mermaid 自带的投影", () => {
+    // 主题注入在 svg 内部 <style> 里的那些（flowchart / pie / gantt 的节点）
+    assert.match(clientJs, /themeVariables:\s*\{\s*dropShadow:\s*"none"\s*\}/);
+  });
+
+  test("硬编码在 filter 属性上的投影由 CSS 兜住", () => {
+    // sequence 的 actor 是 filter=\"url(#…-drop-shadow)\" 写成属性的，
+    // 主题变量管不到；呈现属性本来就输给作者样式，所以不必上 !important
+    assert.match(themeCss, /\.mermaid-figure svg \[filter\]\s*\{\s*filter:\s*none;/);
   });
 });
