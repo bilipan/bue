@@ -24,11 +24,24 @@ export interface Workspace {
   bySlug: Map<string, DocEntry>;
 }
 
-const MARKDOWN_EXT = new Set([".md", ".markdown", ".mdown", ".mkd"]);
+const MARKDOWN_EXTS = [".md", ".markdown", ".mdown", ".mkd"];
+const MARKDOWN_EXT_SET = new Set(MARKDOWN_EXTS);
+const MARKDOWN_EXT_RE = /\.(md|markdown|mdown|mkd)$/i;
 const IGNORED_DIRS = new Set(["node_modules", ".git", ".svn", ".hg", "dist", "build", ".next", ".cache"]);
 
+/** 目录里找 README 时要试的扩展名，顺序即优先级 */
+export const README_EXTS: readonly string[] = MARKDOWN_EXTS;
+
 export function isMarkdown(file: string): boolean {
-  return MARKDOWN_EXT.has(extname(file).toLowerCase());
+  return MARKDOWN_EXT_SET.has(extname(file).toLowerCase());
+}
+
+/**
+ * 去掉 markdown 扩展名，剩下的就是 slug。
+ * 扩展名清单只在 MARKDOWN_EXTS 这一处定义，别再散落正则副本。
+ */
+export function stripMarkdownExt(relPath: string): string {
+  return relPath.replace(MARKDOWN_EXT_RE, "");
 }
 
 /** 取文件名里的 slug：去扩展名、非法字符转连字符 */
@@ -100,6 +113,17 @@ function makeEntry(abs: string, relPath: string): DocEntry {
 }
 
 /**
+ * 按绝对路径 + 相对根目录的路径临时构造一个文档条目。
+ *
+ * 供「按路径直接渲染」的路由用：workspace 是启动时扫出来的清单，
+ * 单文件模式（bue a.md）只装了一篇，a.md 里链到的 b.md 不在清单里，
+ * 但它就在磁盘上、也该能打开。
+ */
+export function docEntryFor(absPath: string, relPath: string): DocEntry {
+  return makeEntry(absPath, relPath);
+}
+
+/**
  * 把 CLI 参数解析成一份文档清单 + 文档根目录。
  * - 单个 .md → 根目录 = 该文件所在目录，slug = 文件名
  * - 多个文件 / 目录 → 根目录 = 它们的公共祖先目录，slug = 相对路径
@@ -129,7 +153,7 @@ export function buildWorkspace(targets: string[]): Workspace {
     } else if (!isMarkdown(p)) {
       throw new Error(
         `不是 Markdown 文件：${p}\n` +
-          `bue 只支持 ${[...MARKDOWN_EXT].join(" / ")}，请换一个文件，或直接传它所在的目录。`,
+          `bue 只支持 ${MARKDOWN_EXTS.join(" / ")}，请换一个文件，或直接传它所在的目录。`,
       );
     } else {
       abs.push(p);

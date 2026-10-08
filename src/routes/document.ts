@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { slugifyPath, type DocEntry, type Workspace } from "../config.ts";
+import {
+  docEntryFor,
+  isDirectory,
+  isMarkdown,
+  README_EXTS,
+  slugifyPath,
+  stripMarkdownExt,
+  type DocEntry,
+  type Workspace,
+} from "../config.ts";
 import { renderMarkdown } from "../render/markdown.ts";
 import { renderNotFound, renderShell } from "../ui/shell.ts";
 import { renderIndex } from "./index.ts";
@@ -23,15 +32,25 @@ function notFound(message: string, detail = ""): Response {
 }
 
 /**
- * markdown 里的相对 URL 处理。两种目标：
- *  - 指向本地 .md → 改写成站内路由 /d/<slug>，这样目录模式能真正跳转
+ * markdown 里的相对 URL 处理。三种目标：
+ *  - 指向本地 .md → 改写成站内路由，这样目录模式能真正跳转
+ *  - 指向目录 → 改写成该目录的 README（没有就原样留下）
  *  - 其余相对路径（图片、pdf…）→ 改写成 /assets/<相对根目录的路径>，
  *    否则 /d/guide/install 页面里的 ../img/a.png 会被解析到 /d/img/ 下
+ *
+ * .md 目标分两种地址：扫进 workspace 的用 /d/<slug>（短、稳定）；
+ * 没扫进来的（单文件模式最常见：只装了一篇，却链到隔壁的 b.md）
+ * 用 /p/<路径> 按盘上文件直接渲染。绝不能因为「不在清单里」就把原始相对
+ * href 丢回浏览器——浏览器会拿它对着 /d/<slug> 解析，必然 404。
  */
 function createUrlRewriter(workspace: Workspace, doc: DocEntry) {
   const slugs = new Set(workspace.docs.map((d) => d.slug));
 
-  return (href: string): string => {
+  function encodePath(rel: string): string {
+    return rel.split("/").map(encodeURIComponent).join("/");
+  }
+
+  const rewrite: (href: string) => string = (href) => {
     if (!href) return href;
     if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//") || href.startsWith("#")) {
       return href;
@@ -53,14 +72,32 @@ function createUrlRewriter(workspace: Workspace, doc: DocEntry) {
     const rel = relative(workspace.root, abs.absPath).split(sep).join("/");
     const suffix = `${query}${hash}`;
 
-    if (/\.(md|markdown|mdown|mkd)$/i.test(rel)) {
-      const slug = slugifyPath(rel.replace(/\.(md|markdown|mdown|mkd)$/i, ""));
-      if (!slugs.has(slug)) return href;
-      return `/d/${slug.split("/").map(encodeURIComponent).join("/")}${suffix}`;
+    // 链到目录：指向该目录的 README，符合「进文件夹看首页」的直觉
+    if (isDirectory(abs.absPath)) {
+      const readme = findReadmeIn(abs.absPath);
+      if (!readme) return href;
+      return rewrite(relative(docDir, readme).split(sep).join("/") + suffix);
     }
 
-    return `/assets/${rel.split("/").map(encodeURIComponent).join("/")}${suffix}`;
+    if (isMarkdown(rel)) {
+      const slug = slugifyPath(stripMarkdownExt(rel));
+      const base = slugs.has(slug) ? `/d/${encodePath(slug)}` : `/p/${encodePath(rel)}`;
+      return `${base}${suffix}`;
+    }
+
+    return `/assets/${encodePath(rel)}${suffix}`;
   };
+
+  return rewrite;
+}
+
+/** 目录里的 README（任一受支持的扩展名），用来解析「链到目录」的链接 */
+function findReadmeIn(dir: string): string | undefined {
+  for (const ext of README_EXTS) {
+    const candidate = join(dir, `README${ext}`);
+    if (isRegularFile(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 function renderDoc(doc: DocEntry, workspace: Workspace, settings: RenderSettings): Response {
@@ -94,12 +131,7 @@ function renderDoc(doc: DocEntry, workspace: Workspace, settings: RenderSettings
 function serveAsset(workspace: Workspace, pathname: string): Response {
   const rel = pathname.slice("/assets/".length);
   const safe = safeResolve(workspace.root, workspace.root, rel);
-  if (!safe.ok) {
-    return new Response(`403 ${safe.reason}`, {
-      status: 403,
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
-  }
+  if (!safe.ok) return forbidden(safe.reason);
   if (!isRegularFile(safe.absPath)) return new Response("404 Not Found", { status: 404 });
 
   try {
@@ -125,6 +157,41 @@ function serveRaw(workspace: Workspace, slug: string): Response {
   } catch {
     return new Response("500 Internal Server Error", { status: 500 });
   }
+}
+
+/**
+ * 按盘上路径渲染一篇 markdown：`/p/<相对根目录的路径>`。
+ *
+ * workspace 是启动时扫出来的清单，单文件模式只装了一篇，
+ * 但文档里链到的兄弟文件同样在磁盘上、同样该能打开。
+ * 安全边界仍然是工作区根目录，和 /assets/ 一致。
+ */
+function servePath(workspace: Workspace, urlPath: string, settings: RenderSettings): Response {
+  const safe = safeResolve(workspace.root, workspace.root, urlPath);
+  if (!safe.ok) return forbidden(safe.reason);
+  if (!isRegularFile(safe.absPath) || !isMarkdown(safe.absPath)) {
+    return notFound("找不到这个文档", urlPath);
+  }
+
+  const relPath = relative(workspace.root, safe.absPath);
+  // slug 已经被清单占着时（同名不同扩展名）走 /d/，避免两个地址抢一篇文档
+  const entry = docEntryFor(safe.absPath, relPath);
+  if (workspace.bySlug.has(entry.slug)) {
+    return redirect(`/d/${entry.slug.split("/").map(encodeURIComponent).join("/")}`);
+  }
+  return renderDoc(entry, workspace, settings);
+}
+
+function redirect(location: string): Response {
+  return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
+}
+
+/** 路径越界这类请求一律 403，和 /assets/ 保持一致，不要混成 404 */
+function forbidden(reason: string): Response {
+  return new Response(`403 ${reason}`, {
+    status: 403,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
 }
 
 /** 首页：单文件直接渲染；多文件优先 README，否则给索引页 */
@@ -177,6 +244,9 @@ function route(pathname: string, workspace: Workspace, settings: RenderSettings)
   if (isVendorPath(pathname)) return serveVendor(pathname);
   if (pathname.startsWith("/assets/")) return serveAsset(workspace, pathname);
   if (pathname.startsWith("/raw/")) return serveRaw(workspace, decodeSegment(pathname.slice("/raw/".length)));
+  if (pathname.startsWith("/p/")) {
+    return servePath(workspace, pathname.slice("/p/".length), settings);
+  }
   if (pathname.startsWith("/d/")) {
     const slug = decodeSegment(pathname.slice("/d/".length));
     const doc = workspace.bySlug.get(slug);

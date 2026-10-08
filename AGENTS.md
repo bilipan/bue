@@ -49,6 +49,9 @@ pnpm link --global             # 暴露全局 bue
 7. **凡是"收起目录"的逻辑都必须先判 `wide.matches`。** 宽屏目录是常驻侧栏，点目录项、点页面空白都不能把它收起——只有工具条按钮能。只有窄屏抽屉才该自动收起。这条同样有测试守着。
 8. **改 mermaid 缩放先读这三条坑。** svg 的节点归属会变（全屏时被搬进画布，取节点要走 `activeSvg()` 而不是 `svgOf()`，否则缩放静默失效、关闭时甚至把图弄丢）；100% 必须还原本来的内联 `max-width`，清空会让小图撑满变形；放大时反过来要显式写 `max-width: none`，否则被 mermaid 的内联值卡住。
 9. **flex 容器里的 mermaid 图要显式给 `align-items`。** 默认 `stretch` 会把 svg 拉成容器那么高，宽图放大时高度卡住不动，看起来像缩放失灵；居中一律用 `safe center`，普通 `center` 会让溢出那半截滚不到。
+10. **相对链接永远不要把原始 href 原样还给浏览器。** 浏览器是拿它对着当前 URL 解析的，正文页在 `/d/<slug>` 或 `/p/<path>` 下，`[b](other.md)` 会被解析成 `/d/other.md` 必然 404。改写器要么给出站内绝对地址，要么明确知道自己没处理好——`return href` 这种写法已经害出过一次线上 404（单文件模式里链到没被扫描的兄弟文档）。`tests/server.test.ts` 的「单文件模式下的文档间跳转」就是这条的护栏。
+11. **`.md` 链接有两个地址，别只认一个。** 扫进 workspace 的用 `/d/<slug>`，没扫进去的用 `/p/<路径>` 按盘上文件渲染。`/p/` 命中清单同 slug 时 302 归一到 `/d/`。
+12. **markdown 扩展名清单只写在 `config.ts` 一处**（`MARKDOWN_EXTS` / `stripMarkdownExt`）。别再在路由里手写 `/\.(md|markdown|mdown|mkd)$/` 这类副本，扩展名一改就会漂。
 
 ## 架构要点
 
@@ -58,6 +61,7 @@ pnpm link --global             # 暴露全局 bue
 - **slug 必须走 `config.ts` 的 `slugifyPath()`。** `buildWorkspace` 和 URL 重写器共用它，各自实现必然漂移。
 - **HTML `no-store` / vendor 长缓存。** 别把两个反了。
 - **mermaid 走 `/vendor/mermaid.js`（UMD 单文件）**，不要改成 `mermaid.esm.min.js`，那会引入 chunk 懒加载瀑布。
+- **workspace 是启动时的快照。** 新增的文件不在清单里，但照样能通过 `/p/` 打开；反过来别指望清单会跟着磁盘变。
 
 ## 手动验收清单
 
@@ -74,3 +78,4 @@ pnpm link --global             # 暴露全局 bue
 - **切主题后缩放百分比不变**（重绘换了新 svg 节点，缩放要套回去）
 - 图全屏：点「全屏」和点图本体都能进；滚轮缩放以光标为锚点、拖拽平移（窄屏用真实触摸滑一遍）、`Esc` 与「关闭」都能退出，退出后图回到原位且不重复（`document.querySelectorAll('svg').length` 应和打开前一致）
 - 全屏层打开时**背后正文不能跟着滚**，且全屏层不锁 `body` 滚动
+- 文档间跳转：`demo.md` 底部「文档间跳转」四条链接逐条点开，全是 200 而不是 404；跨文档锚点要真的滚到对应小节（看 `window.scrollY`）；从 `pipeline.md` 里的 `../README.md` 能跳回文档站
