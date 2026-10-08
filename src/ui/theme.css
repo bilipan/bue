@@ -498,6 +498,7 @@ body {
 /* ---------- Mermaid ---------- */
 
 .mermaid-figure {
+  position: relative; /* 工具条要绝对定位到右上角 */
   margin: 0 0 16px;
   padding: 16px;
   text-align: center;
@@ -519,14 +520,24 @@ body {
  * 居中必须用 safe center：普通 center 在子元素宽于容器时会把左边那半截
  * 顶到容器外、且滚不到（content 被推到负偏移），safe 才会在溢出时靠左对齐。
  */
+/*
+ * 高度由 JS 按「适配时的图高」写死，缩放只改内部可视范围，外框不动。
+ * 两轴都能滚：放大后图可能只溢出纵向（竖长的 sequence），只给横向的话
+ * 那半截就永远看不到。两轴都要 safe center——普通 center 遇到溢出
+ * 会把内容推到负偏移、滚不到。
+ */
 .mermaid-viewport {
   display: flex;
   justify-content: safe center;
-  /* 单个子元素时 stretch 是空操作，写明是为了图绝不会被拉高 */
-  align-items: flex-start;
-  overflow-x: auto;
-  overflow-y: hidden;
+  align-items: safe center;
+  overflow: auto;
   padding: 4px 0;
+  scrollbar-width: thin;
+  /*
+   * JS 写的 height 要当「内容高」用。全局是 border-box的话那点上下内边距
+   * 会从 height 里扣，适配时图就比框高 8px，凭空冒出一条纵向滚动条。
+   */
+  box-sizing: content-box;
 }
 
 /*
@@ -539,48 +550,97 @@ body {
   width: 100%;
 }
 
+/*
+ * svg 默认是 inline，底下会留一条基线间隙（约 7px）。高度锁死之后这点
+ * 余量就变成了真实的纵向溢出，适配状态下凭空冒出一条滚动条。
+ * 改成 block 用 auto 外边距居中，顺带让溢出时的起点靠左、整段都够得着。
+ */
+.mermaid-viewport > .mermaid > svg {
+  display: block;
+  margin-inline: auto;
+}
+
 .mermaid-figure svg {
   max-width: 100%;
   height: auto;
 }
 
+/*
+ * 工具条浮在图的右上角，不占文档流——图高多少它都贴着图走，
+ * 也不会把图往下顶。半透明底 + 边框，压在图上也读得清。
+ */
 .mermaid-tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
   display: flex;
-  gap: 4px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 8px;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bar-bg);
+  backdrop-filter: saturate(180%) blur(8px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
-/* 图还没渲染出来时先别亮按钮，免得给一个死按钮 */
+/* 图还没渲染出来时先别亮按钮，免得给一排死按钮 */
 .mermaid-figure:not([data-rendered]) .mermaid-tools {
   display: none;
 }
 
 .mermaid-tool {
-  min-width: 26px;
-  height: 24px;
-  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
   cursor: pointer;
 }
 
 .mermaid-tool:hover {
   color: var(--fg);
-  border-color: var(--fg-subtle);
+  background: var(--bg-inset);
+  border-color: var(--border-subtle);
 }
 
-.mermaid-level {
-  min-width: 40px;
-  color: var(--fg-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
+/* 拖动模式打开：按钮点亮，同时图的抓手光标生效 */
+.mermaid-tool[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--bg-inset);
+  border-color: var(--border);
+}
+
+/* 图标统一描边，形状在 markdown.ts 里只给路径 */
+.mermaid-tool svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/*
+ * 拖动模式 + 真的有东西可挪才接管手势。
+ * touch-action 只在这个状态下设——平时不设，否则窄屏上按住图
+ * 会把页面滚动吃掉（那条不能被抢）。data-pannable 覆盖两种「可挪」：
+ * 内容溢出（用滚动平移）和内容比框小（用 transform 在空隙里挪）。
+ */
+.mermaid-figure[data-pan="on"][data-pannable] .mermaid-viewport {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.mermaid-figure[data-pan="on"][data-pannable][data-dragging] .mermaid-viewport {
+  cursor: grabbing;
 }
 
 .mermaid-error {
@@ -608,68 +668,6 @@ body {
 
 .mermaid-src pre {
   margin-top: 8px;
-}
-
-/* ---------- 图全屏查看 ---------- */
-
-/*
- * 和图片灯箱一样不锁 body 滚动：层是 fixed 的，画布自己滚，
- * 并用 overscroll-behavior 切断传递，滚到边不会连带滚背后的正文。
- */
-.mermaid-fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  background: rgba(1, 4, 9, 0.85);
-}
-
-.mermaid-fullscreen-canvas {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  justify-content: safe center;
-  /*
-   * align-items 必须显式给：flex 默认 stretch，会把 svg 拉成画布那么高，
-   * 于是放大一张宽图时高度始终卡住不变，看起来像缩放失灵。
-   * safe center 居中；比画布高时靠上对齐，否则上半截滚不到。
-   */
-  align-items: safe center;
-  padding: 32px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  /* 触摸拖拽平移交给 pointer 事件，别让浏览器抢去滚页面 */
-  touch-action: none;
-  cursor: grab;
-}
-
-.mermaid-fullscreen-canvas.panning {
-  cursor: grabbing;
-}
-
-.mermaid-fullscreen-canvas svg {
-  flex: none;
-  max-width: none;
-  background: var(--bg);
-  border-radius: var(--radius);
-}
-
-.mermaid-fullscreen-close {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  height: 30px;
-  padding: 0 12px;
-  color: #fff;
-  font: inherit;
-  font-size: 13px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.mermaid-fullscreen-close:hover {
-  background: rgba(255, 255, 255, 0.2);
 }
 
 /* ---------- 文件索引页 ---------- */

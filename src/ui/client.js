@@ -207,10 +207,6 @@
     var nodes = document.querySelectorAll(".mermaid");
     if (!nodes.length) return;
 
-    // 全屏层里正拿着被移走的那个 svg：重绘会再造一个，DOM 里就会出现两份
-    // 重复 id 的 SVG（marker / clipPath 全靠 id 引用），箭头会集体失效
-    closeViewer();
-
     // 已渲染过的节点要先还原成纯源码并清掉 data-processed，否则 mermaid 会跳过
     for (var i = 0; i < nodes.length; i++) {
       if (!nodes[i].getAttribute("data-processed")) continue;
@@ -268,14 +264,20 @@
 
   /* ---------------- 图缩放 ---------------- */
 
-  var ZOOM_MIN = 0.25;
-  var ZOOM_MAX = 8;
-  var ZOOM_STEP = 0.25;
+  /*
+   * data-zoom 记的是「相对适配容器的倍数」，不是绝对像素：
+   * 1 = 刚好铺满容器宽度（也就是加缩放之前的原样），2 = 两倍宽。
+   * 记绝对像素的话容器一变宽就得重算一遍，这里把换算留给 applyZoom。
+   */
+  var ZOOM_MIN = 0.1;
+  var ZOOM_MAX = 20;
+  var ZOOM_STEP = 1.25;
 
-  // figure -> { svg, w, h }：svg 节点换了（主题切换会重绘）就重新量，
+  // figure -> { svg, w, h, style }：svg 节点换了（主题切换会重绘）就重新量，
   // 因为量到的必须是「原始尺寸」，量已缩放过的宽度会越滚越大
   var baseSizes = new WeakMap();
-  var viewer = null;
+  // figure -> { freeX, freeY }：内容比框小时用来在空隙里挪的位移（px）
+  var freePans = new WeakMap();
 
   function figureOf(node) {
     return node && node.closest ? node.closest(".mermaid-figure") : null;
@@ -285,16 +287,8 @@
     return fig.querySelector(".mermaid > svg");
   }
 
-  /**
-   * figure 当前的 svg 节点。全屏查看时它已经被搬进画布，不在 figure 里面了，
-   * 这时候还去 figure 里找就会拿到 null——缩放会静默失效，关闭时甚至会把图弄丢。
-   */
-  function activeSvg(fig) {
-    if (viewer && viewer.fig === fig) {
-      var moved = viewer.canvas.querySelector("svg");
-      if (moved) return moved;
-    }
-    return svgOf(fig);
+  function viewportOf(fig) {
+    return fig.querySelector(".mermaid-viewport");
   }
 
   function zoomOf(fig) {
@@ -324,47 +318,160 @@
     return size;
   }
 
-  /**
-   * 把缩放套到 svg 上。缩放值只认 figure 上的 data-zoom，
-   * 全屏层里改的也是它，关掉层回到正文还是同一个大小。
-   */
-  function applyZoom(fig, scale) {
-    scale = clamp(scale, ZOOM_MIN, ZOOM_MAX);
-    fig.setAttribute("data-zoom", String(scale));
+  /** 适配容器时的比例：比容器宽就按容器宽收窄，窄图保持原始大小 */
+  function fitRatio(fig, base) {
+    var vp = viewportOf(fig);
+    if (!vp || !base.w || !vp.clientWidth) return 1;
+    return Math.min(1, vp.clientWidth / base.w);
+  }
 
-    var level = fig.querySelector("[data-zoom-level]");
-    if (level) level.textContent = Math.round(scale * 100) + "%";
+  function applyZoom(fig, zoom) {
+    zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    fig.setAttribute("data-zoom", String(zoom));
 
-    var svg = activeSvg(fig);
+    var svg = svgOf(fig);
     if (!svg) {
       fig.removeAttribute("data-rendered");
       return;
     }
     var base = baseSize(fig, svg);
-    if (scale === 1) {
+    var vp = viewportOf(fig);
+
+    /*
+     * 高度锁在「适配时的图高」，不随缩放变。
+     * 否则放大一张竖长的图会把外框一起顶高、页面跟着跳，
+     * 而这层本来就是拿来装溢出内容的——锁住之后缩放只改内部可视范围，
+     * 外框尺寸始终和加缩放之前一致。
+     */
+    if (vp && base.h) vp.style.height = Math.ceil(base.h * fitRatio(fig, base)) + "px";
+
+    if (zoom === 1) {
       /*
-       * 100% 是「原样」：把 mermaid 自己写的内联样式还回去。它写的
+       * 适配 = 原样：把 mermaid 自己写的内联样式还回去。它写的
        * max-width 就是图的固有宽度——窄图不会被拉大，宽图由 CSS 的
-       * max-width: 100% 收窄。清成空串反而会让 svg 退回 width="100%"
-       * 撑满容器，把小图放大变形。
+       * max-width: 100% 收窄到容器宽。清成空串反而会让 svg 退回
+       * width="100%" 撑满容器，把小图放大变形。
        */
       if (base.style == null) svg.removeAttribute("style");
       else svg.setAttribute("style", base.style);
     } else {
       /*
        * 放大时必须显式压掉那条内联 max-width，否则放大到比它更宽
-       * 就被卡住不动；width 给死 px，配合 viewport 的横向滚动。
+       * 就被卡住不动；width 给死 px，配合 viewport 的双向滚动。
        */
+      var scale = fitRatio(fig, base) * zoom;
       svg.style.maxWidth = "none";
       svg.style.width = base.w ? Math.round(base.w * scale) + "px" : "";
       svg.style.height = "auto";
     }
     fig.setAttribute("data-rendered", "");
+    applyView(fig);
+  }
+
+  /**
+   * 以视口中心为锚缩放：放大前后「看到的中间那一块」保持不动。
+   * 不锚定的话，每次点放大都在往右跳，配合拖动根本没法看清某一块。
+   */
+  function zoomBy(fig, factor) {
+    var old = zoomOf(fig);
+    var next = clamp(old * factor, ZOOM_MIN, ZOOM_MAX);
+    if (next === old) return;
+
+    var vp = viewportOf(fig);
+    var svg = svgOf(fig);
+    if (!vp || !svg) return applyZoom(fig, next);
+
+    var free = freePanOf(fig);
+    var cx = vp.scrollLeft + vp.clientWidth / 2;
+    var cy = vp.scrollTop + vp.clientHeight / 2;
+    applyZoom(fig, next);
+    var k = next / old;
+    vp.scrollLeft = cx * k - vp.clientWidth / 2;
+    vp.scrollTop = cy * k - vp.clientHeight / 2;
+    // 内容比框小的那部分（放大后未必还小）也按同一比例挪，不然会跳一下
+    free.freeX *= k;
+    free.freeY *= k;
+    applyView(fig);
+  }
+
+  /* ---------------- 平移 ---------------- */
+
+  /**
+   * 一个方向上有两种表达，择一而用：
+   *  - 内容比框大 → 用 viewport 的滚动（scrollLeft/scrollTop），和滚动条、
+   *    滚轮、和内容的超滚范围都天然一致
+   *  - 内容比框小 → 滚动没有范围，拖不动。改用 transform 在空出来的空隙里挪，
+   *    这正是「适配尺寸 / 缩小到比框还小」时用户要的：拖动模式一开就该能拖。
+   * 两条路都以「内容不能被拖出视野」为界。
+   */
+  function panMetrics(fig) {
+    var vp = viewportOf(fig);
+    var svg = svgOf(fig);
+    if (!vp || !svg) return null;
+    var box = svg.getBoundingClientRect();
+    /*
+     * clientHeight 含上下内边距，而那点内边距不是可平移的空间——
+     * 直接拿它减图高会把空隙算多出几 px，于是一张「刚好铺满、其实无处可拖」
+     * 的图也会被判成可拖，顺手 touch-action 把页面滚动也吃了。
+     * 再留 1px 余量，让亚像素的量测误差归零。
+     */
+    var cs = getComputedStyle(vp);
+    var availX = vp.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    var availY = vp.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+    return {
+      vp: vp,
+      svg: svg,
+      maxX: Math.max(0, vp.scrollWidth - vp.clientWidth),
+      maxY: Math.max(0, vp.scrollHeight - vp.clientHeight),
+      // 内容比框小，空出来的一半（居中摆放时左右各这么多）
+      slackX: Math.max(0, (availX - box.width - 1) / 2),
+      slackY: Math.max(0, (availY - box.height - 1) / 2),
+    };
+  }
+
+  function freePanOf(fig) {
+    var v = freePans.get(fig);
+    if (!v) {
+      v = { freeX: 0, freeY: 0 };
+      freePans.set(fig, v);
+    }
+    return v;
+  }
+
+  function applyView(fig) {
+    var m = panMetrics(fig);
+    if (!m) return;
+    var v = freePanOf(fig);
+
+    // 有滚动范围就不该再有位移，否则两套机制会互相打架
+    v.freeX = m.maxX > 0 ? 0 : clamp(v.freeX, -m.slackX, m.slackX);
+    v.freeY = m.maxY > 0 ? 0 : clamp(v.freeY, -m.slackY, m.slackY);
+
+    if (m.maxX > 0 || m.maxY > 0) {
+      m.vp.scrollLeft = clamp(m.vp.scrollLeft, 0, m.maxX);
+      m.vp.scrollTop = clamp(m.vp.scrollTop, 0, m.maxY);
+    }
+    if (v.freeX || v.freeY) {
+      m.svg.style.transform = "translate(" + Math.round(v.freeX) + "px," + Math.round(v.freeY) + "px)";
+    } else {
+      m.svg.style.removeProperty("transform");
+    }
+    markPannable(fig);
+  }
+
+  /**
+   * 有没有东西可挪：某一轴溢出，或者某一轴有空隙。
+   * 两者都没有时（比如宽图刚好铺满）拖了也不会动，那种情况下不该抢手势。
+   */
+  function markPannable(fig) {
+    var m = panMetrics(fig);
+    var pannable = !!m && (m.maxX > 0 || m.maxY > 0 || m.slackX > 0 || m.slackY > 0);
+    if (pannable) fig.setAttribute("data-pannable", "");
+    else fig.removeAttribute("data-pannable");
   }
 
   function syncFigure(fig) {
-    if (!fig) return;
-    applyZoom(fig, zoomOf(fig));
+    if (fig) applyZoom(fig, zoomOf(fig));
   }
 
   function syncAllFigures() {
@@ -372,113 +479,20 @@
     for (var i = 0; i < figs.length; i++) syncFigure(figs[i]);
   }
 
-  /* 全屏查看：层里滚轮缩放、拖拽平移、Esc 关闭 */
+  /* 拖动模式：开关控制「按住图拖 = 平移」还是「正常选中文本」 */
 
-  function openViewer(fig) {
-    closeViewer(); // 先把上一张可能还开着的放回正文，再取本图的 svg
-    var svg = svgOf(fig);
-    if (!svg) return;
-
-    var box = document.createElement("div");
-    box.className = "mermaid-fullscreen";
-
-    var canvas = document.createElement("div");
-    canvas.className = "mermaid-fullscreen-canvas";
-
-    var closeBtn = document.createElement("button");
-    closeBtn.className = "mermaid-fullscreen-close";
-    closeBtn.type = "button";
-    closeBtn.textContent = "关闭";
-
-    /*
-     * 把真实的 svg 节点搬进来，不能克隆一份：mermaid 生成的 SVG 里箭头
-     * marker、clipPath 全靠 DOM id 引用，克隆会出现重复 id，引用全乱。
-     */
-    viewer = { fig: fig, canvas: canvas, home: svg.parentNode };
-    canvas.appendChild(svg);
-    box.appendChild(canvas);
-    box.appendChild(closeBtn);
-    document.body.appendChild(box);
-
-    var scale = zoomOf(fig);
-    applyZoom(fig, scale);
-    fitViewer(scale);
-
-    canvas.addEventListener(
-      "wheel",
-      function (e) {
-        e.preventDefault();
-        zoomViewerBy(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
-      },
-      { passive: false },
-    );
-
-    var drag = null;
-    canvas.addEventListener("pointerdown", function (e) {
-      if (e.pointerType === "mouse" && e.button !== 0) return;
-      drag = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
-      canvas.classList.add("panning");
-      if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
-    });
-    canvas.addEventListener("pointermove", function (e) {
-      if (!drag) return;
-      canvas.scrollLeft = drag.left - (e.clientX - drag.x);
-      canvas.scrollTop = drag.top - (e.clientY - drag.y);
-    });
-    var endDrag = function () {
-      drag = null;
-      canvas.classList.remove("panning");
-    };
-    canvas.addEventListener("pointerup", endDrag);
-    canvas.addEventListener("pointercancel", endDrag);
-
-    closeBtn.addEventListener("click", closeViewer);
+  function panningOn(fig) {
+    return fig.getAttribute("data-pan") === "on";
   }
 
-  /** 层内容小到不用滚时，居中显示 */
-  function fitViewer(scale) {
-    var canvas = viewer.canvas;
-    var fig = viewer.fig;
-    var svg = activeSvg(fig);
-    if (!svg || !scale) return;
-    var base = baseSize(fig, svg);
-    var overflowX = base.w * scale - canvas.clientWidth;
-    var overflowY = base.h * scale - canvas.clientHeight;
-    if (overflowX > 0) canvas.scrollLeft = overflowX / 2;
-    if (overflowY > 0) canvas.scrollTop = overflowY / 2;
-    else canvas.scrollTop = 0;
-  }
-
-  /** 以光标为锚点缩放：缩放前后光标下的那个点保持不动 */
-  function zoomViewerBy(factor, clientX, clientY) {
-    var fig = viewer.fig;
-    var canvas = viewer.canvas;
-    var old = zoomOf(fig);
-    var next = clamp(old * factor, ZOOM_MIN, ZOOM_MAX);
-    if (next === old) return;
-
-    var rect = canvas.getBoundingClientRect();
-    var atX = clientX - rect.left;
-    var atY = clientY - rect.top;
-    var contentX = canvas.scrollLeft + atX;
-    var contentY = canvas.scrollTop + atY;
-
-    applyZoom(fig, next);
-    canvas.scrollLeft = contentX * (next / old) - atX;
-    canvas.scrollTop = contentY * (next / old) - atY;
-  }
-
-  function closeViewer() {
-    if (!viewer) return;
-    var fig = viewer.fig;
-    var canvas = viewer.canvas;
-    var svg = activeSvg(fig);
-    if (svg) viewer.home.appendChild(svg); // 搬回正文，缩放状态保持在 data-zoom 上
-    if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
-    var box = document.querySelector(".mermaid-fullscreen");
-    if (box && box.parentNode) box.parentNode.removeChild(box);
-    viewer = null;
-    syncFigure(fig);
+  function togglePan(fig, btn) {
+    var on = !panningOn(fig);
+    if (on) fig.setAttribute("data-pan", "on");
+    else {
+      fig.removeAttribute("data-pan");
+      fig.removeAttribute("data-dragging");
+    }
+    if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
   }
 
   function initDiagramZoom() {
@@ -487,72 +501,91 @@
     document.addEventListener("click", function (e) {
       if (!e.target || !e.target.closest) return;
 
-      var full = e.target.closest("[data-zoom-full]");
-      if (full) {
-        var f = figureOf(full);
-        if (!f) return;
-        if (viewer && viewer.fig === f) closeViewer();
-        else openViewer(f);
-        return;
-      }
-
-      var step = e.target.closest("[data-zoom-in]");
-      var fig = figureOf(step || e.target);
+      var btn = e.target.closest(".mermaid-tools button");
+      if (!btn) return;
+      var fig = figureOf(btn);
       if (!fig) return;
 
-      if (step) {
-        applyZoom(fig, zoomOf(fig) + ZOOM_STEP);
-        return;
+      if (btn.hasAttribute("data-pan-toggle")) return togglePan(fig, btn);
+      if (btn.hasAttribute("data-zoom-fit")) {
+        // 适配 = 回到容器大小，位移也一并归零
+        var free = freePanOf(fig);
+        free.freeX = 0;
+        free.freeY = 0;
+        var vp = viewportOf(fig);
+        if (vp) {
+          vp.scrollLeft = 0;
+          vp.scrollTop = 0;
+        }
+        return applyZoom(fig, 1);
       }
-      if (e.target.closest("[data-zoom-out]")) {
-        applyZoom(fig, zoomOf(fig) - ZOOM_STEP);
-        return;
-      }
-      if (e.target.closest("[data-zoom-reset]")) {
-        applyZoom(fig, 1);
-        return;
-      }
-      // 点图本体（全屏按钮和工具条已在上文处理掉）进入全屏
-      if (svgOf(fig) && e.target.closest(".mermaid-viewport")) openViewer(fig);
+      if (btn.hasAttribute("data-zoom-in")) return zoomBy(fig, ZOOM_STEP);
+      if (btn.hasAttribute("data-zoom-out")) return zoomBy(fig, 1 / ZOOM_STEP);
     });
 
-    document.addEventListener("keydown", function (e) {
-      if (!viewer) return;
-      if (e.key === "Escape") {
-        closeViewer();
-        return;
-      }
-      if (e.key === "+" || e.key === "=") {
-        zoomViewerBy(1 + ZOOM_STEP, centerX(), centerY());
-      } else if (e.key === "-" || e.key === "_") {
-        zoomViewerBy(1 / (1 + ZOOM_STEP), centerX(), centerY());
-      } else if (e.key === "0") {
-        applyZoom(viewer.fig, 1);
-        fitViewer(1);
+    /*
+     * 拖动模式一开就接管 pointer，不看当前是不是适配尺寸：
+     * 拖动模式的意义就是「拖画布」，等用户先放大到溢出才生效是反的。
+     * 但「真的没东西可挪」（宽图刚好铺满框）时仍然放行，否则 preventDefault
+     * 会把触摸滚页面一起吃掉。工具条自身排除掉，别把点按钮当成拖图。
+     */
+    var drag = null;
+    document.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (e.target.closest && e.target.closest(".mermaid-tools")) return;
+      var fig = figureOf(e.target);
+      if (!fig || !panningOn(fig) || !fig.hasAttribute("data-pannable")) return;
+
+      var m = panMetrics(fig);
+      var free = freePanOf(fig);
+      drag = {
+        fig: fig,
+        vp: m.vp,
+        svg: m.svg,
+        free: free,
+        x: e.clientX,
+        y: e.clientY,
+        left: m.vp.scrollLeft,
+        top: m.vp.scrollTop,
+        freeX: free.freeX,
+        freeY: free.freeY,
+        maxX: m.maxX,
+        maxY: m.maxY,
+        slackX: m.slackX,
+        slackY: m.slackY,
+      };
+      fig.setAttribute("data-dragging", "");
+      if (m.vp.setPointerCapture) m.vp.setPointerCapture(e.pointerId);
+      e.preventDefault(); // 否则会顺手选中图里的文字
+    });
+    document.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      // 内容跟着手走：手往左挪，内容就往左走
+      var dx = drag.x - e.clientX;
+      var dy = drag.y - e.clientY;
+      if (drag.maxX > 0) drag.vp.scrollLeft = clamp(drag.left + dx, 0, drag.maxX);
+      else drag.free.freeX = clamp(drag.freeX + dx, -drag.slackX, drag.slackX);
+      if (drag.maxY > 0) drag.vp.scrollTop = clamp(drag.top + dy, 0, drag.maxY);
+      else drag.free.freeY = clamp(drag.freeY + dy, -drag.slackY, drag.slackY);
+
+      if (!drag.maxX && !drag.maxY && (drag.free.freeX || drag.free.freeY)) {
+        drag.svg.style.transform =
+          "translate(" + Math.round(drag.free.freeX) + "px," + Math.round(drag.free.freeY) + "px)";
       }
     });
+    var endDrag = function () {
+      if (!drag) return;
+      drag.fig.removeAttribute("data-dragging");
+      drag = null;
+    };
+    document.addEventListener("pointerup", endDrag);
+    document.addEventListener("pointercancel", endDrag);
 
-    window.addEventListener("resize", function () {
-      // 放大到不再溢出容器时回落原始大小，免得留一个看不出区别的 150%
-      var figs = document.querySelectorAll(".mermaid-figure");
-      for (var i = 0; i < figs.length; i++) {
-        var fig = figs[i];
-        var svg = svgOf(fig);
-        var vp = fig.querySelector(".mermaid-viewport");
-        if (!svg || !vp || zoomOf(fig) <= 1) continue;
-        if (svg.getBoundingClientRect().width <= vp.clientWidth + 1) applyZoom(fig, 1);
-      }
-    });
-  }
-
-  function centerX() {
-    var r = viewer.canvas.getBoundingClientRect();
-    return r.left + r.width / 2;
-  }
-
-  function centerY() {
-    var r = viewer.canvas.getBoundingClientRect();
-    return r.top + r.height / 2;
+    /*
+     * 缩放是相对适配容器的倍数，所以容器一变宽只需重新套一遍，
+     * 倍数不用动——不存在「放大到不再溢出却看不出区别」的中间态。
+     */
+    window.addEventListener("resize", syncAllFigures);
   }
 
   /* ---------------- 复制按钮 ---------------- */

@@ -36,14 +36,36 @@ describe("renderMarkdown", () => {
     assert.doesNotMatch(html, /<b>x<\/b>/);
   });
 
-  test("mermaid 图带缩放工具条和横向滚动容器", () => {
+  test("mermaid 图带图标工具条和横向滚动容器", () => {
     const { html } = renderMarkdown("```mermaid\nflowchart LR\n  A-->B\n```", identity);
     assert.match(html, /class="mermaid-viewport"/, "放大后要有一层容器负责横向滚动");
-    assert.match(html, /data-zoom-in/);
+    assert.match(html, /data-pan-toggle/, "拖动模式");
     assert.match(html, /data-zoom-out/);
-    assert.match(html, /data-zoom-reset/);
-    assert.match(html, /data-zoom-full/, "应有进入全屏查看的入口");
-    assert.match(html, /data-zoom-level/, "应显示当前缩放比例");
+    assert.match(html, /data-zoom-in/);
+    assert.match(html, /data-zoom-fit/, "适配容器尺寸");
+    assert.doesNotMatch(html, /data-zoom-full/, "不做全屏预览了");
+  });
+
+  test("工具条顺序是 拖动 → 缩小 → 放大 → 适配", () => {
+    const { html } = renderMarkdown("```mermaid\nflowchart LR\n  A-->B\n```", identity);
+    const order = ["data-pan-toggle", "data-zoom-out", "data-zoom-in", "data-zoom-fit"].map((a) =>
+      html.indexOf(a),
+    );
+    assert.ok(
+      order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1]!)),
+      `按钮顺序不对：${JSON.stringify(order)}`,
+    );
+  });
+
+  test("工具条按钮只有图标，靠 aria-label/title 给出可读名", () => {
+    const { html } = renderMarkdown("```mermaid\nflowchart LR\n  A-->B\n```", identity);
+    const tools = html.slice(html.indexOf('class="mermaid-tools"'), html.indexOf("</div>", html.indexOf('class="mermaid-tools"')));
+    for (const label of ["拖动模式", "缩小", "放大", "适配容器尺寸"]) {
+      assert.match(tools, new RegExp(`aria-label="${label}"`), label);
+      assert.match(tools, new RegExp(`title="${label}"`), label);
+    }
+    assert.equal((tools.match(/<svg /g) ?? []).length, 4, "四个按钮各一个图标");
+    assert.doesNotMatch(tools, /mermaid-level|data-zoom-level/, "不再显示百分比");
   });
 
   test("缩放值存在 figure 上而不是 .mermaid 里", () => {

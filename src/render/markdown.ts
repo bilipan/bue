@@ -67,22 +67,49 @@ export function renderMarkdown(source: string, options: RenderOptions): RenderRe
 }
 
 /**
+ * 工具条图标。统一用描边（不是实心），描边属性写在 theme.css 的
+ * .mermaid-tool svg 上，这里只给路径。
+ */
+const MERMAID_ICONS = {
+  /** 拖动模式：四向箭头 */
+  pan: '<path d="M8 1.5v13M1.5 8h13"/><path d="M6 3.5 8 1.5l2 2M6 12.5l2 2 2-2M3.5 6 1.5 8l2 2M12.5 6l2 2-2 2"/>',
+  /** 放大：放大镜 + 加号 */
+  zoomIn: '<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 14 14M7 5v4M5 7h4"/>',
+  /** 缩小：放大镜 + 减号 */
+  zoomOut: '<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 14 14M5 7h4"/>',
+  /** 适配容器尺寸：四角取景框 */
+  fit: '<path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5"/>',
+} as const;
+
+type MermaidIcon = keyof typeof MERMAID_ICONS;
+
+function mermaidTool(icon: MermaidIcon, label: string, attrs: string): string {
+  return (
+    `<button class="mermaid-tool" type="button" ${attrs} aria-label="${label}" title="${label}">` +
+    `<svg viewBox="0 0 16 16" aria-hidden="true">${MERMAID_ICONS[icon]}</svg>` +
+    `</button>`
+  );
+}
+
+/**
  * mermaid 代码块：正文放 .mermaid 占位（客户端渲染），源码折叠在 details 里。
  *
  * 图可缩放，所以正文外面套一层 .mermaid-viewport——放大后超出 figure 宽度时
  * 由它横向滚动。缩放值写在 figure 的 data-zoom 上（不写在 .mermaid 里），
  * 主题切换会重绘并清空 .mermaid，画在 figure 上才跨重绘存活。
+ *
+ * data-zoom 记的是「相对适配容器的倍数」：1 就是刚好铺满容器宽度。
+ * 记绝对像素的话容器一变宽就得重算，这里交给 client 去乘。
  */
 function mermaidBlock(code: string): string {
   return (
     `<figure class="mermaid-figure" data-zoom="1">` +
     `<div class="mermaid-viewport"><div class="mermaid">${escapeHtml(code)}</div></div>` +
     `<div class="mermaid-tools">` +
-    `<button class="mermaid-tool" type="button" data-zoom-out aria-label="缩小图表" title="缩小">−</button>` +
-    `<output class="mermaid-level" data-zoom-level>100%</output>` +
-    `<button class="mermaid-tool" type="button" data-zoom-in aria-label="放大图表" title="放大">+</button>` +
-    `<button class="mermaid-tool" type="button" data-zoom-reset title="恢复原始大小">1:1</button>` +
-    `<button class="mermaid-tool" type="button" data-zoom-full title="全屏查看（滚轮缩放，拖拽平移）">全屏</button>` +
+    mermaidTool("pan", "拖动模式", 'data-pan-toggle aria-pressed="false"') +
+    mermaidTool("zoomOut", "缩小", "data-zoom-out") +
+    mermaidTool("zoomIn", "放大", "data-zoom-in") +
+    mermaidTool("fit", "适配容器尺寸", "data-zoom-fit") +
     `</div>` +
     `<details class="mermaid-src"><summary>查看源码</summary>` +
     `<pre><code class="hljs">${escapeHtml(code)}</code></pre></details>` +

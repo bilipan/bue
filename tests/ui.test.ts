@@ -84,11 +84,20 @@ describe("宽屏目录是常驻侧栏", () => {
   });
 });
 
+
 describe("mermaid 图缩放", () => {
+  /** 取某个函数体，用于检查内部实现 */
+  function body(marker: string): string {
+    const start = clientJs.indexOf(marker);
+    assert.notEqual(start, -1, `client.js 里应存在 ${marker}`);
+    // 注意：第二个参数必须给 start，否则会从头找第一个同缩进的闭合括号
+    return clientJs.slice(start, clientJs.indexOf("\n  }", start));
+  }
+
   test("缩放走内联 style.width，并清掉 mermaid 写的内联 max-width", () => {
     // mermaid 会给 svg 写 style="max-width: 380px"，不清掉放大就会被卡死
     assert.match(clientJs, /\.style\.width\s*=/, "缩放应直接改 svg 的内联宽度");
-    assert.match(clientJs, /\.style\.maxWidth\s*=\s*"none"/, "必须显式清掉 mermaid 的内联 max-width");
+    assert.match(clientJs, /\.style\.maxWidth\s*=\s*"none"/, "放大时必须显式清掉那条内联 max-width");
   });
 
   test("固有尺寸取自 viewBox，svg 换了要重量", () => {
@@ -100,81 +109,165 @@ describe("mermaid 图缩放", () => {
     assert.match(clientJs, /fig\.setAttribute\("data-zoom"/, "缩放值要落在 figure 上才能跨重绘存活");
   });
 
-  test("重绘完成后重新套用缩放", () => {
-    assert.match(clientJs, /run\(\{ nodes: nodes \}\)[\s\S]*?then\([\s\S]*?syncAllFigures\(\)/, "切主题后应把缩放套回新 svg");
-    assert.match(clientJs, /closeViewer\(\);[\s\S]{0,400}?removeAttribute\("data-processed"\)/, "重绘前要先放回全屏层里的 svg");
-  });
-
-  test("放大后的溢出由 viewport 横向滚动，且居中要用 safe", () => {
-    assert.match(themeCss, /\.mermaid-viewport\s*\{[^}]*overflow-x:\s*auto/s, "放大后要能横向滚动");
+  test("缩放记的是相对适配容器的倍数，不是绝对像素", () => {
+    assert.match(clientJs, /function fitRatio\(/, "要有「适配容器」的比例换算");
     assert.match(
-      themeCss,
-      /\.mermaid-viewport\s*\{[^}]*justify-content:\s*safe center/s,
-      "普通 center 会让溢出部分滚不到，必须 safe center",
+      clientJs,
+      /var scale = fitRatio\(fig, base\) \* zoom/,
+      "实际缩放 = 适配比例 × 倍数，容器变宽时倍数不用动",
     );
   });
 
-  test("两个 flex 容器都要显式 align-items", () => {
-    // 默认的 align-items: stretch 会把 svg 拉成容器那么高，
-    // 宽图放大时高度卡住不动，看起来像缩放失灵
-    for (const sel of [".mermaid-viewport", ".mermaid-fullscreen-canvas"]) {
-      const i = themeCss.indexOf(sel + " {");
-      assert.notEqual(i, -1, `theme.css 里应有 ${sel} 规则`);
-      assert.match(
-        themeCss.slice(i, themeCss.indexOf("}", i)),
-        /align-items:\s*safe center|align-items:\s*flex-start/,
-        `${sel} 必须显式给 align-items，别让 stretch 拉高 svg`,
-      );
-    }
+  test("适配按钮回到倍数 1，还原 mermaid 自己的内联样式", () => {
+    assert.match(clientJs, /data-zoom-fit"\)\) \{[\s\S]*?return applyZoom\(fig, 1\)/, "「适配容器尺寸」= 倍数 1");
+    assert.match(
+      clientJs,
+      /if \(base\.style == null\) svg\.removeAttribute\("style\"\);\s*\n\s*else svg\.setAttribute\("style", base\.style\)/,
+      "倍数 1 必须还原本来的 max-width，清空会让小图撑满变形",
+    );
+    assert.match(clientJs, /style: svg\.getAttribute\("style"\)/, "要在改动前先记下原始内联样式");
+  });
+
+  test("重绘完成后重新套用缩放", () => {
+    assert.match(
+      clientJs,
+      /run\(\{ nodes: nodes \}\)[\s\S]*?then\([\s\S]*?syncAllFigures\(\)/,
+      "切主题后应把缩放套回新 svg",
+    );
+    assert.match(clientJs, /addEventListener\("resize", syncAllFigures\)/, "容器变宽要重算适配比例");
+  });
+
+  test("放大后的溢出两轴都可滚，且居中要用 safe", () => {
+    // 竖长的 sequence 放大后可能只溢出纵向，只给横向滚动那半截就看不到
+    assert.match(themeCss, /\.mermaid-viewport\s*\{[^}]*overflow:\s*auto/s, "两个方向都要能滚");
+    const vpRule = themeCss.slice(themeCss.indexOf(".mermaid-viewport {"), themeCss.indexOf("}", themeCss.indexOf(".mermaid-viewport {")));
+    assert.match(vpRule, /justify-content:\s*safe center/, "普通 center 会让溢出部分滚不到");
+    assert.match(vpRule, /align-items:\s*safe center/, "纵向同理：比框高时要靠上对齐才够得着");
+  });
+
+  test("viewport 高度按适配时的图高锁死，缩放不改外框", () => {
+    assert.match(
+      clientJs,
+      /vp\.style\.height = Math\.ceil\(base\.h \* fitRatio\(fig, base\)\) \+ "px"/,
+      "高度要按「适配时的图高」写死，否则放大竖长的图会把外框一起顶高",
+    );
+    // 锁高时若按 border-box 算，那点上下内边距会从 height 里扣，
+    // 适配时就凭空多出纵向溢出、冒出一条滚动条
+    const vpRule = themeCss.slice(themeCss.indexOf(".mermaid-viewport {"), themeCss.indexOf("}", themeCss.indexOf(".mermaid-viewport {")));
+    assert.match(vpRule, /box-sizing:\s*content-box/, "JS 写的 height 必须当内容高用");
+  });
+
+  test("svg 用 block，消掉 inline 基线间隙", () => {
+    // svg 默认 inline，底下留约 7px 基线间隙；高度锁死后这点余量
+    // 就变成真实的纵向溢出，适配状态下凭空冒出滚动条
+    assert.match(themeCss, /\.mermaid-viewport > \.mermaid > svg\s*\{[^}]*display:\s*block/s);
+    assert.match(themeCss, /\.mermaid-viewport > \.mermaid > svg\s*\{[^}]*margin-inline:\s*auto/s, "改 block 后要自己居中");
+  });
+
+  test("两轴都要有「可挪」空间才算能拖", () => {
+    // 竖长的图放大后只溢出纵向，只看 scrollWidth 会漏掉；
+    // 内容比框小（缩小过头、或窄图）也该能挪，那是 transform 的活
+    const m = body("function panMetrics(fig)");
+    assert.match(m, /maxX: Math\.max\(0, vp\.scrollWidth - vp\.clientWidth\)/);
+    assert.match(m, /maxY: Math\.max\(0, vp\.scrollHeight - vp\.clientHeight\)/);
+    // clientHeight 含内边距，减图高前得先把内边距扣掉，否则空隙会多算几 px，
+    // 一张刚好铺满的图会被误判成可拖
+    assert.match(m, /availX = vp\.clientWidth - \(parseFloat\(cs\.paddingLeft\) \|\| 0\)/);
+    assert.match(m, /availY = vp\.clientHeight - \(parseFloat\(cs\.paddingTop\) \|\| 0\)/);
+    assert.match(m, /slackX: Math\.max\(0, \(availX - box\.width - 1\) \/ 2\)/, "内容比框小的空隙也算可挪");
+    assert.match(m, /slackY: Math\.max\(0, \(availY - box\.height - 1\) \/ 2\)/);
+    assert.match(
+      clientJs,
+      /m\.maxX > 0 \|\| m\.maxY > 0 \|\| m\.slackX > 0 \|\| m\.slackY > 0/,
+      "溢出或有空隙都算可拖",
+    );
+  });
+
+  test("平移有两条路：有滚动范围用滚动，否则用 transform 在空隙里挪", () => {
+    const v = body("function applyView(fig)");
+    assert.match(v, /v\.freeX = m\.maxX > 0 \? 0 : clamp\(v\.freeX, -m\.slackX, m\.slackX\)/, "两套机制不能同时生效");
+    assert.match(v, /v\.freeY = m\.maxY > 0 \? 0 : clamp\(v\.freeY, -m\.slackY, m\.slackY\)/);
+    assert.match(v, /svg\.style\.transform = "translate\(/, "空隙里要靠 transform 挪");
+    assert.match(v, /removeProperty\("transform"\)/, "没位移时要把 transform 撤掉");
+  });
+
+  test("拖动模式一开就接管 pointer，不看是否适配尺寸", () => {
+    const down = clientJs.slice(
+      clientJs.indexOf('document.addEventListener("pointerdown"'),
+      clientJs.indexOf('document.addEventListener("pointermove"'),
+    );
+    assert.doesNotMatch(down, /data-zoom|data-overflow/, "拖动不该挂在缩放或溢出状态上");
+    assert.match(down, /if \(!fig \|\| !panningOn\(fig\) \|\| !fig\.hasAttribute\("data-pannable"\)\) return;/, "只认拖动模式和是否有东西可挪");
+    assert.match(down, /\.mermaid-tools/, "工具条自身不能被当成拖图");
+    assert.match(down, /panMetrics\(fig\)/, "按下时就要记下这次的滚动/空隙范围");
+  });
+
+  test("拖动的每个方向各自选一条路，且都不越界", () => {
+    const move = clientJs.slice(
+      clientJs.indexOf('document.addEventListener("pointermove"'),
+      clientJs.indexOf("var endDrag"),
+    );
+    assert.match(move, /if \(drag\.maxX > 0\) drag\.vp\.scrollLeft = clamp\([\s\S]*?, 0, drag\.maxX\)/);
+    assert.match(move, /else drag\.free\.freeX = clamp\([\s\S]*?, -drag\.slackX, drag\.slackX\)/);
+    assert.match(move, /if \(drag\.maxY > 0\) drag\.vp\.scrollTop = clamp\([\s\S]*?, 0, drag\.maxY\)/);
+    assert.match(move, /else drag\.free\.freeY = clamp\([\s\S]*?, -drag\.slackY, drag\.slackY\)/);
+  });
+
+  test("适配按钮把位移也归零", () => {
+    assert.match(clientJs, /data-zoom-fit"\)\) \{[\s\S]*?free\.freeX = 0;[\s\S]*?free\.freeY = 0;/, "适配 = 回到容器大小并居中");
+  });
+
+  test("touch-action 只在「拖动模式 + 有东西可挪」时生效", () => {
+    // 无条件设 touch-action: none 会吃掉窄屏上按住图时的页面滚动
+    assert.match(
+      themeCss,
+      /\.mermaid-figure\[data-pan="on"\]\[data-pannable\] \.mermaid-viewport\s*\{[^}]*touch-action:\s*none/s,
+    );
+    const viewportRule = themeCss.slice(themeCss.indexOf(".mermaid-viewport {"), themeCss.indexOf("}", themeCss.indexOf(".mermaid-viewport {")));
+    assert.doesNotMatch(viewportRule, /touch-action/, "viewport 本身不该设 touch-action");
+  });
+
+  test("缩放以视口中心为锚，不往右跳", () => {
+    assert.match(clientJs, /function zoomBy\(fig, factor\)/);
+    assert.match(clientJs, /data-zoom-in"\)\) return zoomBy\(fig, ZOOM_STEP\)/, "放大要走带锚点的路径");
+    const z = body("function zoomBy(fig, factor)");
+    assert.match(z, /vp\.scrollLeft = cx \* k - vp\.clientWidth \/ 2/);
+    assert.match(z, /vp\.scrollTop = cy \* k - vp\.clientHeight \/ 2/);
+    assert.match(z, /free\.freeX \*= k;/, "空隙里的位移也要跟着缩放走，否则会跳一下");
+    assert.match(z, /free\.freeY \*= k;/);
   });
 
   test("图没渲染出来前不显示工具条", () => {
     assert.match(themeCss, /\.mermaid-figure:not\(\[data-rendered\]\) \.mermaid-tools\s*\{\s*display:\s*none/);
   });
 
-  test("全屏层搬真实 svg 节点，不许克隆", () => {
-    // mermaid 的 SVG 里 marker / clipPath 全靠 DOM id 引用，
-    // 克隆一份会出现重复 id，箭头标记会集体失效
-    assert.doesNotMatch(clientJs, /cloneNode/, "全屏查看请搬运真实节点，别克隆");
-    assert.match(clientJs, /canvas\.appendChild\(svg\)/);
-    assert.match(clientJs, /viewer\.home\.appendChild\(svg\)/, "关闭时要把 svg 搬回正文");
+  test("工具条浮在图的右上角，不占文档流", () => {
+    const i = themeCss.indexOf(".mermaid-tools {");
+    assert.notEqual(i, -1);
+    const rule = themeCss.slice(i, themeCss.indexOf("}", i));
+    assert.match(rule, /position:\s*absolute/, "工具条要脱离文档流，不能把图往下顶");
+    assert.match(rule, /top:\s*8px/);
+    assert.match(rule, /right:\s*8px/);
+    assert.match(themeCss, /\.mermaid-figure\s*\{[^}]*position:\s*relative/s, "figure 得是定位参照");
   });
 
-  test("取 svg 节点必须走 activeSvg：全屏时它已经不在 figure 里了", () => {
-    // 照 svgOf() 取节点，全屏里会拿到 null：缩放静默失效，
-    // closeViewer 还会连图一起丢掉（正文里那张图直接消失）
-    assert.match(clientJs, /function activeSvg\(fig\)/);
-    const applyZoom = clientJs.slice(clientJs.indexOf("function applyZoom"));
-    const body = applyZoom.slice(0, applyZoom.indexOf("\n  }"));
-    assert.match(body, /activeSvg\(fig\)/, "applyZoom 要用 activeSvg");
-    const closeViewer = clientJs.slice(clientJs.indexOf("function closeViewer"));
-    assert.match(
-      closeViewer.slice(0, closeViewer.indexOf("\n  }")),
-      /activeSvg\(fig\)/,
-      "closeViewer 要用 activeSvg，否则关掉全屏图就没了",
-    );
+  test("按钮是纯图标：统一描边，没有文字内容", () => {
+    const svgRule = themeCss.slice(themeCss.indexOf(".mermaid-tool svg {"), themeCss.indexOf("}", themeCss.indexOf(".mermaid-tool svg {")));
+    assert.match(svgRule, /fill:\s*none/, "图标走描边");
+    assert.match(svgRule, /stroke:\s*currentColor/);
+    assert.doesNotMatch(clientJs, /mermaid-level|data-zoom-level/, "不再有百分比读数");
   });
 
-  test("100% 交回 mermaid 自己的内联样式，不能清空", () => {
-    assert.match(
-      clientJs,
-      /if \(base\.style == null\) svg\.removeAttribute\("style"\);\s*\n\s*else svg\.setAttribute\("style", base\.style\)/,
-      "100% 必须还原本来的 max-width，清空会让小图撑满变形",
-    );
-    assert.match(clientJs, /style: svg\.getAttribute\("style"\)/, "要在改动前先记下原始内联样式");
+  test("拖动模式：开关控制平移，并同步 aria-pressed", () => {
+    assert.match(clientJs, /function togglePan\(/);
+    assert.match(clientJs, /fig\.setAttribute\("data-pan", "on"\)/, "开关状态落在 figure 上");
+    assert.match(clientJs, /btn\.setAttribute\("aria-pressed", on \? "true" : "false"\)/, "按钮要报出开关状态");
+    assert.match(themeCss, /\.mermaid-tool\[aria-pressed="true"\]/, "打开时按钮要点亮");
   });
 
-  test("全屏层不锁页面滚动，靠 overscroll-behavior 断传递", () => {
-    assert.match(themeCss, /\.mermaid-fullscreen-canvas\s*\{[^}]*overscroll-behavior:\s*contain/s);
-    assert.match(themeCss, /\.mermaid-fullscreen-canvas\s*\{[^}]*touch-action:\s*none/s, "触摸拖拽平移需要独占手势");
-    const fullscreenRule = themeCss.slice(themeCss.indexOf(".mermaid-fullscreen"));
-    assert.doesNotMatch(fullscreenRule, /overflow\s*:\s*hidden/, "全屏层不该锁住任何滚动");
-  });
-
-  test("全屏层支持滚轮缩放、拖拽平移和 Esc 关闭", () => {
-    assert.match(clientJs, /addEventListener\(\s*"wheel"/, "全屏里应能滚轮缩放");
-    assert.match(clientJs, /passive:\s*false/, "不 passive 才拦得住页面的滚轮缩放");
-    assert.match(clientJs, /pointerdown/, "全屏里应能拖拽平移");
-    assert.match(clientJs, /e\.key === "Escape"[\s\S]{0,120}closeViewer\(\)/, "Esc 应关闭全屏层");
+  test("不做全屏预览：相关代码与样式都不该再有", () => {
+    assert.doesNotMatch(clientJs, /fullscreen|openViewer|closeViewer/, "全屏层已移除");
+    assert.doesNotMatch(themeCss, /\.mermaid-fullscreen/, "全屏层样式已移除");
+    assert.doesNotMatch(clientJs, /cloneNode/, "没有需要搬运/克隆节点的场景了");
   });
 });
