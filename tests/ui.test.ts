@@ -300,6 +300,17 @@ describe("没有目录时正文居中并放宽", () => {
   });
 });
 
+describe("mermaid 标签跨浏览器不截断", () => {
+  test("关掉 HTML 标签，改用 SVG text 精确测量", () => {
+    // foreignObject 的测量靠「getBoundingClientRect().width 是否正好等于 max-width」
+    // 来决定换行，既依赖 max-width 在 table-cell 上生效（Firefox 不认，mermaid#5785），
+    // 又是精确浮点比较，可能落空；一旦落空节点就被压到最小宽度、长标签被裁。
+    // htmlLabels: false 让 mermaid 走 getBBox，跨浏览器一致。
+    assert.match(clientJs, /htmlLabels:\s*false/, "必须回退到 SVG text 标签");
+    assert.doesNotMatch(clientJs, /htmlLabels:\s*!/, "不要只对部分浏览器做条件开关");
+  });
+});
+
 describe("mermaid 图不带阴影", () => {
   test("主题变量关掉 mermaid 自带的投影", () => {
     // 主题注入在 svg 内部 <style> 里的那些（flowchart / pie / gantt 的节点）

@@ -220,6 +220,20 @@
       theme: dark ? "dark" : "default",
       securityLevel: "strict",
       fontFamily: getComputedStyle(document.body).fontFamily,
+      /*
+       * 关掉 HTML 标签，让 mermaid 用 SVG <text> + getBBox 量标签。
+       *
+       * foreignObject 那条路的测量不可靠：它给标签 div 设 max-width 量一次宽度，
+       * 靠 getBoundingClientRect().width 是否"正好等于上限"来判断要不要换行。
+       * 这个判断既依赖 max-width 在 display: table-cell 上生效（Firefox 不认，
+       * mermaid#5785），又是一个精确浮点比较，尺寸/字号一变就可能落空——两种
+       * 情况都会走到不换行分支，节点被压到最小宽度（wrappingWidth = 120px），
+       * 长标签单行溢出、被 foreignObject 裁掉。
+       *
+       * SVG text 走 getBBox 精确测量，且 <br/> 换行照常支持（flowchart 的
+       * 边标签、sequence / gantt 等不受影响，它们本来就不走 HTML 标签）。
+       */
+      htmlLabels: false,
       // 主题自带的节点投影；剩下的硬编码 filter 属性由 theme.css 兜住
       themeVariables: { dropShadow: "none" },
     });
